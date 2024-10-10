@@ -45,7 +45,21 @@ func readWriteFiles(fileName string, newFileName string) bool {
 		return false
 	}
 
-	text := fixFile(data)
+	words := strings.Fields(string(data))
+
+	words = convertText(words)
+
+	// Fix indefinite articles
+	words = fixIndefiniteArticles(words)
+
+	// Join the words into a string
+	text := strings.Join(words, " ")
+
+	// Fix the punctuation spacing
+	text = fixPunctuationSpacing(text)
+
+	// Fix the single quotes spacing
+	text = fixSingleQuotes(text)
 
 	newFile, err := os.Create(newFileName)
 	if err != nil {
@@ -67,16 +81,6 @@ func readWriteFiles(fileName string, newFileName string) bool {
 	return true
 }
 
-func fixFile(data []byte) string {
-	words := strings.Fields(string(data))
-	words = convertText(words)
-	words = fixIndefiniteArticles(words)
-	text := strings.Join(words, " ")
-	text = fixPunctuationSpacing(text)
-	text = fixSingleQuotes(text)
-	return text
-}
-
 func convertText(words []string) []string {
 	commandsWithIndex := map[string]commandFuncWithIndex{
 		"(cap)": capCommand,
@@ -92,26 +96,42 @@ func convertText(words []string) []string {
 	var result []string
 	for i := 0; i < len(words); i++ {
 		word := words[i]
-		if strings.HasPrefix(word, "(") && strings.Contains(word, ",") {
-			if !strings.HasSuffix(word, ")") && i+1 < len(words) {
-				word = word + " " + words[i+1]
-				i++
-			}
-			cmdParts := strings.Split(word, ",")
-			cmd := strings.TrimSpace(cmdParts[0])
-			if cmdFunc, exists := commandsWithIndex[cmd+")"]; exists && len(cmdParts) == 2 {
-				numStr := strings.TrimSpace(cmdParts[1])
-				num, err := strconv.Atoi(numStr)
-				numStr = strings.TrimRight(numStr, ")")
-				if err == nil && len(result) > 0 {
-					result = cmdFunc(result, len(result)-1, num)
+
+		if strings.HasPrefix(word, "(") {
+			// Check for commands with index
+			if strings.Contains(word, ",") {
+				// Handle commands with index
+				if !strings.HasSuffix(word, ")") && i+1 < len(words) {
+					// Handle commands split across two words
+					word = word + " " + words[i+1]
+					i++
 				}
-			}
-		} else if cmdFunc, exists := commands[word]; exists {
-			if len(result) > 0 {
-				result[len(result)-1] = cmdFunc(result[len(result)-1])
+				cmdParts := strings.Split(word, ",")
+				cmd := strings.TrimSpace(cmdParts[0])
+				if cmdFunc, exists := commandsWithIndex[cmd+")"]; exists && len(cmdParts) == 2 {
+					numStr := strings.TrimSpace(cmdParts[1])
+					numStr = strings.TrimRight(numStr, ")")
+					num, err := strconv.Atoi(numStr)
+					if err == nil && len(result) > 0 {
+						result = cmdFunc(result, len(result)-1, num)
+					}
+				}
+			} else if cmdFunc, exists := commands[word]; exists {
+				// Handle commands without index (hex, bin)
+				if len(result) > 0 {
+					result[len(result)-1] = cmdFunc(result[len(result)-1])
+				}
+			} else if cmdFuncWithIndex, exists := commandsWithIndex[word]; exists {
+				// Handle commands without index (cap, up, low) default to count = 1
+				if len(result) > 0 {
+					result = cmdFuncWithIndex(result, len(result)-1, 1)
+				}
+			} else {
+				// Unrecognized command, treat as word
+				result = append(result, word)
 			}
 		} else {
+			// Regular word
 			result = append(result, word)
 		}
 	}
@@ -173,6 +193,7 @@ func fixPunctuationSpacing(text string) string {
 	for i := 0; i < length; i++ {
 		current := runes[i]
 
+		// Remove spaces before punctuation marks
 		if current == ' ' && i+1 < length && strings.ContainsRune(targetPunctuations, runes[i+1]) {
 			// Skip the space
 			continue
@@ -180,6 +201,7 @@ func fixPunctuationSpacing(text string) string {
 
 		result.WriteRune(current)
 
+		// Insert space after punctuation marks if needed
 		if strings.ContainsRune(targetPunctuations, current) {
 			if i+1 < length {
 				next := runes[i+1]
@@ -202,12 +224,14 @@ func fixSingleQuotes(text string) string {
 		current := runes[i]
 
 		if current == '\'' {
+			// Toggle the inSingleQuote flag
 			inSingleQuote = !inSingleQuote
 			result.WriteRune(current)
 			continue
 		}
 
 		if inSingleQuote {
+			// Inside single quotes, skip spaces after opening quote or before closing quote
 			if (i > 0 && runes[i-1] == '\'' && current == ' ') || (i+1 < length && runes[i+1] == '\'' && current == ' ') {
 				continue
 			}
@@ -224,10 +248,12 @@ func fixIndefiniteArticles(words []string) []string {
 		currentWord := words[i]
 		nextWord := words[i+1]
 
+		// Remove any trailing punctuation from currentWord for checking
 		currentWordStripped := strings.TrimRightFunc(currentWord, func(r rune) bool {
 			return unicode.IsPunct(r)
 		})
 
+		// Remove any leading punctuation from nextWord for checking
 		nextWordStripped := strings.TrimLeftFunc(nextWord, func(r rune) bool {
 			return unicode.IsPunct(r)
 		})
@@ -235,10 +261,12 @@ func fixIndefiniteArticles(words []string) []string {
 		if (currentWordStripped == "a" || currentWordStripped == "A") && len(nextWordStripped) > 0 {
 			firstLetter := rune(nextWordStripped[0])
 			if strings.ContainsRune(vowelsAndH, unicode.ToLower(firstLetter)) {
+				// Replace "a" with "an" in currentWord, preserving any trailing punctuation
 				replacement := "an"
 				if currentWordStripped == "A" {
 					replacement = "An"
 				}
+				// Get any trailing punctuation
 				trailingPunct := currentWord[len(currentWordStripped):]
 				words[i] = replacement + trailingPunct
 			}
